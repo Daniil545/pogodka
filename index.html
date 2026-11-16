@@ -95,6 +95,9 @@ h2{font-size:15px;font-weight:800;margin-bottom:10px}
 .range{position:relative;height:6px;border-radius:6px;background:var(--surface-2)}
 .range i{position:absolute;top:0;bottom:0;border-radius:6px;background:linear-gradient(90deg,var(--cold),var(--warm))}
 
+.morning{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:12px;border-radius:14px;background:var(--accent);color:#fff;font-weight:700;font-size:14px;margin-bottom:12px}
+.morning:active{opacity:.85}
+.morning.done{background:var(--accent-soft);color:var(--accent)}
 .foot{font-size:11px;color:var(--muted);text-align:center;margin-top:4px}
 .foot a{color:inherit}
 
@@ -135,7 +138,8 @@ const store = {
   get(k,def){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; } },
   set(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
 };
-const DEFAULT = {name:"Москва",region:"Россия",lat:55.7558,lon:37.6173,tz:"Europe/Moscow"};
+const DEFAULT = {name:"Москва",region:"Россия",lat:55.7558,lon:37.6173,id:524901};
+const BOT = "poogodka_bot";
 let recent = store.get("recent",[DEFAULT]);
 let current = store.get("city",DEFAULT);
 
@@ -250,6 +254,7 @@ function render(city, W){
         <div class="feels">Ощущается как ${fmt(cur.apparent_temperature)} · днём ${fmt(D.temperature_2m_max[0])}, ночью ${fmt(D.temperature_2m_min[0])}</div>
       </div></div>
     </div>
+    ${morningBtn(city)}
     ${warns.map(w=>`<div class="alert"><div class="dot">!</div><div>${w}</div></div>`).join("")}
     <div class="facts">
       ${fact("Ветер",`${Math.round(cur.wind_speed_10m)} м/с`,`${dir}, порывы до ${Math.round(cur.wind_gusts_10m)}`)}
@@ -267,6 +272,44 @@ function render(city, W){
     <div class="card"><h2>На 10 дней</h2>${days}</div>
     <div class="foot">УФ-индекс сегодня: ${uv} · Данные <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a></div>`;
 }
+
+/* ---------- «Присылать утром этот город» ---------- */
+const inTelegram = !!(tg && tg.initData);
+let morning = null;   // город утренней карточки (храним в облаке Telegram)
+const same = (a,b) => a && b && Math.abs(a.lat-b.lat)<0.01 && Math.abs(a.lon-b.lon)<0.01;
+function morningBtn(city){
+  if(!inTelegram) return "";
+  return same(morning,city)
+    ? `<button class="morning done" id="morning">✓ Этот город приходит утром</button>`
+    : `<button class="morning" id="morning">📬 Присылать утром этот город</button>`;
+}
+function refreshMorningBtn(){
+  const b=document.getElementById("morning"); if(!b) return;
+  b.outerHTML = morningBtn(current);
+}
+if(inTelegram && tg.CloudStorage){
+  try{ tg.CloudStorage.getItem("morning",(err,val)=>{ if(!err && val){ try{ morning=JSON.parse(val); refreshMorningBtn(); }catch(e){} } }); }catch(e){}
+}
+function sendMorning(city){
+  if(same(morning,city)) return;
+  morning = {name:city.name,lat:city.lat,lon:city.lon};
+  try{ tg.CloudStorage.setItem("morning",JSON.stringify(morning)); }catch(e){}
+  try{ tg.HapticFeedback.notificationOccurred("success"); }catch(e){}
+  refreshMorningBtn();
+  if(!tg.initDataUnsafe || !tg.initDataUnsafe.query_id){
+    // открыто кнопкой внизу чата: отдаём данные боту напрямую (окно закроется само)
+    tg.sendData(JSON.stringify({a:"city",name:city.name,region:city.region||"",lat:city.lat,lon:city.lon}));
+    return;
+  }
+  // открыто кнопкой меню: передаём город через ссылку на бота
+  const p = v => String(v).replace(".","p");
+  const payload = city.id ? "city_"+city.id : "geo_"+p(city.lat)+"_"+p(city.lon);
+  tg.openTelegramLink(`https://t.me/${BOT}?start=${payload}`);
+  setTimeout(()=>{ try{ tg.close(); }catch(e){} },400);
+}
+document.getElementById("view").addEventListener("click",e=>{
+  if(e.target.closest("#morning")) sendMorning(current);
+});
 
 /* ---------- Недавние города ---------- */
 function renderChips(){
@@ -293,7 +336,7 @@ q.addEventListener("input",()=>{
     try{
       const r=await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(v)}&count=7&language=ru&format=json`);
       const j=await r.json();
-      found=(j.results||[]).map(x=>({name:x.name,region:[x.admin1,x.country].filter(Boolean).join(", "),lat:+x.latitude.toFixed(4),lon:+x.longitude.toFixed(4)}));
+      found=(j.results||[]).map(x=>({id:x.id,name:x.name,region:[x.admin1,x.country].filter(Boolean).join(", "),lat:+x.latitude.toFixed(4),lon:+x.longitude.toFixed(4)}));
       res.innerHTML = found.length ? found.map((c,i)=>`<button data-i="${i}">${esc(c.name)}<small>${esc(c.region)}</small></button>`).join("")
         : `<div class="empty">Ничего не нашлось. Попробуйте другое написание.</div>`;
       res.classList.add("show");
